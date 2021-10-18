@@ -1,0 +1,4 @@
+[submodule "pokit-web-editor"]
+	path = pokit-web-editor
+	url = https://github.com/blakwurm/pokit-web-editor.git
+	branch = master
