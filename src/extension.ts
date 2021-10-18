@@ -55,16 +55,6 @@ function startEditor() {
 	}
 }
 
-function createServerEditor() {
-	const app = express();
-	let root = path.join(ctx.extensionPath, 'pokit-web-editor', 'public');
-	app.use(express.static(root))
-	app.listen(8888);
-	editor.webview.html = `<html><script type="text/javascript">s
-		window.location.replace("http://localhost:8888/");
-		</script></html>`;
-}
-
 function createEditor() {
 	let j = path.join;
 	let tools = j(ctx.extensionPath, 'pokit-web-editor', 'public');
