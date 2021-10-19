@@ -69,7 +69,7 @@ function sendEvent(evt: string, name: string, data?: any ) {
 }
 
 function getName(uri: vscode.Uri) {
-	let split = uri.toString().split('/');
+	let split = uri.toJSON().path.split('/');
 	let fileSplit = split[split.length-1].split('.');
 	return fileSplit[fileSplit.length-2];
 }
@@ -182,13 +182,11 @@ function onStateUpdate(msg: AppData) {
 async function updateFile(root: string, name: string, content: any) {
 	let uri = vscode.Uri.file(path.join(root,name+'.json'));
 	let txt = JSON.stringify(content, null, 2);
-	let doc = await vscode.workspace.openTextDocument(uri);
-	let panel = await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
+	let panel = await vscode.window.showTextDocument(uri,{preserveFocus:true, viewColumn:vscode.ViewColumn.One});
 	panel.edit(e=>{
 		e.delete(new vscode.Range(new vscode.Position(0,0), new vscode.Position(Infinity,Infinity)));
 		e.insert(new vscode.Position(0,0), txt);
 	});
-	editor.reveal();
 }
 
 function deleteFile(path: string, name: string) {
