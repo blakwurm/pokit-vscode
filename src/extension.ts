@@ -7,8 +7,12 @@ import { CartManifest, EntityStub, SceneStub } from './pokit.types';
 
 let editor: vscode.WebviewPanel;
 let ctx: vscode.ExtensionContext;
+let workspace = "";
 let disposed = true;
 let watching = false;
+
+let entities: Record<string,EntityStub> = {};
+let scenes: Record<string,EntityStub> = {};
 
 enum ToolType {
 	BRUSH,
@@ -59,53 +63,62 @@ function makeFileSystemWatchers(workspace: string, entities: string, scenes: str
 	watching = true;
 }
 
-function sendEvent(evt: string, content: vscode.Uri, skipData?: boolean, defaults?: any) {
-	defaults = defaults || {};
-	if(disposed) return;
-	let split = content.toString().split('/');
+function sendEvent(evt: string, name: string, data?: any ) {
+	if(disposed)return;
+	editor.webview.postMessage({evt,name,data})
+}
+
+function getName(uri: vscode.Uri) {
+	let split = uri.toString().split('/');
 	let fileSplit = split[split.length-1].split('.');
-	let name = fileSplit[fileSplit.length-2];
-	if(skipData){
-		editor.webview.postMessage({evt,name});
-		return;
-	}
-	vscode.workspace.fs.readFile(content).then((c)=>{
-		let data = JSON.parse(c.toString());
-		data = Object.assign(defaults, data);
-		editor.webview.postMessage({
-			evt,
-			name,
-			data
-		})
-	});
+	return fileSplit[fileSplit.length-2];
 }
 
-function onCartChange(f: vscode.Uri) {
-	sendEvent("cart_change", f);
+async function loadUri(uri: vscode.Uri, defaults?: any) {
+	defaults = defaults || {};
+	let c = await vscode.workspace.fs.readFile(uri)
+	let data = JSON.parse(c.toString());
+	return Object.assign(defaults, data);
 }
 
-function onEntityChange(f: vscode.Uri) {
-	sendEvent('entity_change', f, false, {
+async function onCartChange(f: vscode.Uri) {
+	let data = await loadUri(f);
+	let name = getName(f);
+	sendEvent("cart_change", name, data);
+}
+
+async function onEntityChange(f: vscode.Uri) {
+	let name = getName(f);
+	let data = await loadUri(f, {
 		inherits: [],
 		components: {},
 		timestamp: Date.now()
-	});
+	})
+	entities[name] = data;
+	sendEvent("entity_change", name, data);
 }
 
-function onEntityDelete(f: vscode.Uri) {
-	sendEvent("entity_delete", f, true);
+async function onEntityDelete(f: vscode.Uri) {
+	let name = getName(f);
+	delete entities[name]
+	sendEvent("entity_delete", name);
 }
 
-function onSceneChange(f: vscode.Uri) {
-	sendEvent("scene_change", f, false, {
+async function onSceneChange(f: vscode.Uri) {
+	let name = getName(f);
+	let data = await loadUri(f, {
 		systems: [],
 		entities: {},
 		timestamp: Date.now()
 	});
+	scenes[name] = data;
+	sendEvent("scene_change", name, data);
 }
 
-function onSceneDelete(f: vscode.Uri) {
-	sendEvent("scene_delete", f, true);
+async function onSceneDelete(f: vscode.Uri) {
+	let name = getName(f);
+	delete scenes[name];
+	sendEvent("scene_delete", name);
 }
 
 function startEditor() {
@@ -115,7 +128,7 @@ function startEditor() {
 		return;
 	}
 
-	const workspace = folders[0].uri.fsPath;
+	workspace = folders[0].uri.fsPath;
 	const entityFolder = path.join(workspace, 'entities');
 	const sceneFolder = path.join(workspace, 'scenes')
 
@@ -155,12 +168,31 @@ async function createEditor(workspace: string, entityFolder: string, sceneFolder
 	if(!watching) makeFileSystemWatchers(workspace, entityFolder, sceneFolder);
 }
 
-function sleep(t: number) {
-	return new Promise((resolve)=>setTimeout(resolve, t));
+function onStateUpdate(msg: AppData) {
+	if(msg.handling)return;
+	delete msg.entities['__DEFAULT_PARENT__']
+	let {del:edel, change:echange} = getChanges(entities, msg.entities);
+	let {del:sdel, change:schange} = getChanges(scenes, msg.scenes);
+	let entityPath = path.join(workspace, 'entities');
+	let scenePath = path.join(workspace, 'scenes');
+	Object.entries(echange).forEach(([k,v])=>updateFile(entityPath, k, v));
+	Object.entries(schange).forEach(([k,v])=>updateFile(scenePath, k, v));
 }
 
-function onStateUpdate(a: AppData) {
-	if(!a.handling)console.log(a);
+async function updateFile(root: string, name: string, content: any) {
+	let uri = vscode.Uri.file(path.join(root,name+'.json'));
+	let txt = JSON.stringify(content, null, 2);
+	let doc = await vscode.workspace.openTextDocument(uri);
+	let panel = await vscode.window.showTextDocument(doc, vscode.ViewColumn.Beside, true);
+	panel.edit(e=>{
+		e.delete(new vscode.Range(new vscode.Position(0,0), new vscode.Position(Infinity,Infinity)));
+		e.insert(new vscode.Position(0,0), txt);
+	});
+	editor.reveal();
+}
+
+function deleteFile(path: string, name: string) {
+
 }
 
 function prepareCss(root: string, file: string) {
@@ -216,8 +248,8 @@ async function initEditorState(ws: string) {
 	let manifest = JSON.parse(manifestBytes.toString());
 	let entityFiles = await fs.readDirectory(entityFolder);
 	let sceneFiles = await fs.readDirectory(sceneFolder);
-	let entities: Record<string,EntityStub> = {};
-	let scenes: Record<string,SceneStub> = {};
+	entities = {};
+	scenes = {};
 	for(let [file, type] of entityFiles) {
 		let split = file.split('.');
 		if(type === 1 && split[split.length-1] === 'json') {
@@ -261,6 +293,41 @@ async function initEditorState(ws: string) {
 		},
 		spritemap: Buffer.from(spritesBytes).toString('base64')
 	})
+}
+let log = false;
+function getChanges(original: Record<string,any>, modified: Record<string,any>) {
+	let keys = new Set([...Object.keys(original),...Object.keys(modified)]);
+	let del = new Set<string>();
+	let change: Record<string,any> = {};
+	for(let k of keys) {
+		if(!(k in modified)) del.add(k);
+		else if(!(k in original) || diff(original[k], modified[k])) change[k] = modified[k];
+	}
+	return {del,change};
+}
+
+function diff(original: any, modified: any) {
+	if(Array.isArray(original)) {
+		if(original.length !== modified.length) {if(log)console.log('Array length mismatch'); return true; }
+		for(let i in original) {
+			if(typeof original[i] !== typeof modified[i]) {if(log)console.log('types:', typeof original[i], 'and',typeof modified[i], 'dont match');return true};
+			if(typeof original[i] === 'object') {
+				if(diff(original[i], modified[i])) return true;
+			}
+			else if(original[i] !== modified[i]) {if(log)console.log('values:',original[i],'and',modified[i],'dont match');return true};
+		}
+		return false;
+	}
+	let keys = new Set([...Object.keys(original),...Object.keys(modified)]);
+	for(let k of keys) {
+		if(!(k in original) || !(k in modified)){ if(log)console.log(k,'not present in both objects'); return true; }
+		if(typeof original[k] !== typeof modified[k]){ if(log)console.log(k, 'types:', typeof original[k], 'and', typeof modified[k], 'do not match'); return true; }
+		if(typeof original[k] === 'object') {
+			if(diff(original[k], modified[k])){ return true; }
+		}
+		else if(original[k]!==modified[k]){ if(log)console.log(k, 'values:', original[k], 'and', modified[k], 'do not match'); return true; }
+	}
+	return false;
 }
 
 // this method is called when your extension is deactivated
