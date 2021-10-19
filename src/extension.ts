@@ -77,12 +77,18 @@ function getName(uri: vscode.Uri) {
 async function loadUri(uri: vscode.Uri, defaults?: any) {
 	defaults = defaults || {};
 	let c = await vscode.workspace.fs.readFile(uri)
-	let data = JSON.parse(c.toString());
-	return Object.assign(defaults, data);
+	let str = c.toString();
+	try {
+		let data = JSON.parse(str);
+		return Object.assign(defaults, data);
+	} catch {
+		return;
+	}
 }
 
 async function onCartChange(f: vscode.Uri) {
 	let data = await loadUri(f);
+	if(!data)return;
 	let name = getName(f);
 	sendEvent("cart_change", name, data);
 }
@@ -94,6 +100,7 @@ async function onEntityChange(f: vscode.Uri) {
 		components: {},
 		timestamp: Date.now()
 	})
+	if(!data) return;
 	entities[name] = data;
 	sendEvent("entity_change", name, data);
 }
@@ -111,6 +118,7 @@ async function onSceneChange(f: vscode.Uri) {
 		entities: {},
 		timestamp: Date.now()
 	});
+	if(!data) return;
 	scenes[name] = data;
 	sendEvent("scene_change", name, data);
 }
@@ -168,20 +176,39 @@ async function createEditor(workspace: string, entityFolder: string, sceneFolder
 	if(!watching) makeFileSystemWatchers(workspace, entityFolder, sceneFolder);
 }
 
-function onStateUpdate(msg: AppData) {
+async function onStateUpdate(msg: AppData) {
 	if(msg.handling)return;
 	delete msg.entities['__DEFAULT_PARENT__']
 	let {del:edel, change:echange} = getChanges(entities, msg.entities);
 	let {del:sdel, change:schange} = getChanges(scenes, msg.scenes);
 	let entityPath = path.join(workspace, 'entities');
 	let scenePath = path.join(workspace, 'scenes');
-	Object.entries(echange).forEach(([k,v])=>updateFile(entityPath, k, v));
-	Object.entries(schange).forEach(([k,v])=>updateFile(scenePath, k, v));
+	for(let [k,v] of Object.entries(echange)) {
+		await updateFile(entityPath, k, v);
+		entities[k] = v;
+	}
+	for(let [k,v] of Object.entries(schange)) {
+		await updateFile(scenePath, k, v);
+		scenes[k] = v;
+	}
+}
+
+async function exists(uri: vscode.Uri) {
+	try {
+		await vscode.workspace.fs.stat(uri);
+		return true;
+	}
+	catch {
+		return false;
+	}
 }
 
 async function updateFile(root: string, name: string, content: any) {
 	let uri = vscode.Uri.file(path.join(root,name+'.json'));
 	let txt = JSON.stringify(content, null, 2);
+	if(!await exists(uri)) {
+		await vscode.workspace.fs.writeFile(uri, new Uint8Array());
+	}
 	let panel = await vscode.window.showTextDocument(uri,{preserveFocus:true, viewColumn:vscode.ViewColumn.One});
 	panel.edit(e=>{
 		e.delete(new vscode.Range(new vscode.Position(0,0), new vscode.Position(Infinity,Infinity)));
