@@ -7,6 +7,7 @@ import { CartManifest, EntityStub, SceneStub } from './pokit.types';
 let editor: vscode.WebviewPanel;
 let ctx: vscode.ExtensionContext;
 let workspace = "";
+let currentScene = "";
 let disposed = true;
 let watching = false;
 
@@ -59,7 +60,19 @@ function makeFileSystemWatchers(workspace: string, entities: string, scenes: str
 	sceneWatcher.onDidCreate(onSceneChange);
 	sceneWatcher.onDidChange(onSceneChange);
 	sceneWatcher.onDidDelete(onSceneDelete);
+	vscode.window.onDidChangeActiveTextEditor(onDocOpen);
 	watching = true;
+}
+
+function onDocOpen(editor?: vscode.TextEditor) {
+	if(!editor) return;
+	let doc = editor.document;
+	let split = (<string>doc.uri.toJSON().path).split('/').slice(-2);
+	if(split[0]!=='scenes') return;
+	let name = getName(doc.uri);
+	if(name === currentScene) return;
+	sendEvent("scene_transition", name);
+	currentScene = name;
 }
 
 function sendEvent(evt: string, name: string, data?: any ) {
@@ -85,7 +98,7 @@ async function loadJsonUri(uri: vscode.Uri, defaults?: any) {
 		let data = JSON.parse(str);
 		return Object.assign(defaults, data);
 	} catch {
-		return;
+		return defaults;
 	}
 }
 
@@ -299,13 +312,11 @@ async function initEditorState(ws: string) {
 		if(type === 1 && split[split.length-1] === 'json') {
 			let name = split.slice(0, -1).join('.');
 			let fileUri = uri(j(ws, 'entities', file));
-			let eString = (await fs.readFile(fileUri)).toString();
-			let e = JSON.parse(eString);
-			e = Object.assign({
+			let e = await loadJsonUri(fileUri, {
 				inherits: [],
 				components: {},
 				timestamp: Date.now()
-			},e)
+			});
 			entities[name] = e;
 		}
 	}
@@ -314,16 +325,15 @@ async function initEditorState(ws: string) {
 		if(type === 1 && split[split.length-1] === 'json') {
 			let name = split.slice(0, -1).join('.');
 			let fileUri = uri(j(ws, 'scenes', file));
-			let sString = (await fs.readFile(fileUri)).toString();
-			let s = JSON.parse(sString);
-			s = Object.assign({
+			let s = await loadJsonUri(fileUri, {
 				systems: [],
 				entities: {},
 				timestamp: Date.now()
-			},s)
+			})
 			scenes[name] = s;
 		}
 	}
+	currentScene = manifest.defaultScene || Object.keys(scenes)[0];
 	await updateCart();
 	return JSON.stringify({
 		state: {
