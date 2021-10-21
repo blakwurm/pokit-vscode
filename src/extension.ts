@@ -239,7 +239,8 @@ async function updateFile(root: string, name: string, content: any) {
 	let uri = vscode.Uri.file(j(root,name+'.json'));
 	let txt = JSON.stringify(content, null, 2);
 	if(!await exists(uri)) {
-		await vscode.workspace.fs.writeFile(uri, new Uint8Array());
+		await vscode.workspace.fs.writeFile(uri, Buffer.from(txt));
+		return;
 	}
 	let panel = await vscode.window.showTextDocument(uri,{preserveFocus:true, viewColumn:vscode.ViewColumn.One});
 	panel.edit(e=>{
